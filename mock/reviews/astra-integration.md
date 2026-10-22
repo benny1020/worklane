@@ -43,3 +43,9 @@ Verified by the main agent in the in-app browser, using mock data only:
 This is a local interactive mock, not production or live-account proof. Meetings, working-hour defaults, sample clock and two sprint periods remain fixtures. Week is a Monday–Friday board; weekend work is available through daily and review views. Real Jira/GitLab/Confluence/AI calls are absent.
 
 Native drag gesture movement was not verified in this automation environment. Date inputs, overflow scrolling and explicit sprint placement buttons were verified. The critic identified and the main agent corrected the sprint drop handler to set the selected sprint as well as personal status; that handler correction is source-reviewed rather than a live drag result. 125% zoom and long-term user testing were not performed.
+
+## Follow-up: daily execution and remaining-week emphasis
+
+After selecting Today as the default entry and Week as the adjacent planning view, the main agent compressed Today's heading and capacity spacing. Week now starts with completed groups collapsed and gives today/future weekdays more width than past weekdays. Entirely past or future weeks retain equal column widths.
+
+Main-agent browser verification at 1440×900 confirmed the completed groups start collapsed, Monday's completed tasks can be expanded and collapsed, and the next week uses equal column widths. Today, Week and the Today inspector screenshots were refreshed. The production build and diff whitespace check passed. This follow-up was not a new independent Astra review.

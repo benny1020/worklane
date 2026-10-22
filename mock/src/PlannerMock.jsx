@@ -484,7 +484,7 @@ export default function PlannerMock() {
             <span className="avatar small">YK</span>
           </div>
         </header>
-        <main ref={mainRef} className="planner-main">
+        <main ref={mainRef} className="planner-main" data-view={view}>
           <div className="page-heading">
             <div>
               <div className="eyebrow">
@@ -837,7 +837,16 @@ export default function PlannerMock() {
                       />
                     </details>
                   )}
-                  <div className="week-grid">
+                  <div
+                    className="week-grid"
+                    style={{
+                      gridTemplateColumns: week
+                        .map(
+                          (d) => `minmax(0, ${d.date < TODAY ? 0.8 : 1.3}fr)`,
+                        )
+                        .join(' '),
+                    }}
+                  >
                     {week.map((d) => {
                       const ts = tasks.filter((t) => t.date === d.date);
                       const c = capacity(tasks, d.date);
@@ -897,10 +906,7 @@ export default function PlannerMock() {
                               <TaskCard key={t.id} task={t} {...common} />
                             ))}
                             {ts.some((t) => !isOpen(t)) && (
-                              <details
-                                className="week-completed"
-                                open={d.date < TODAY}
-                              >
+                              <details className="week-completed">
                                 <summary>
                                   완료한 일{' '}
                                   {ts.filter((t) => !isOpen(t)).length}개

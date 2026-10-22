@@ -3689,3 +3689,23 @@ h2 > span {
 .agenda-free {
   cursor: default;
 }
+
+/* Daily execution starts higher; preserve the same readable typography. */
+.planner-main[data-view='today'] .page-heading {
+  padding: 10px 0;
+}
+.planner-main[data-view='today'] .page-heading h1 {
+  margin: 4px 0;
+}
+.planner-main[data-view='today'] .heading-actions {
+  padding-top: 0;
+}
+.planner-main[data-view='today'] .day-overview {
+  padding: 10px 0;
+}
+.planner-main[data-view='today'] .day-overview > div:first-child {
+  margin-bottom: 8px;
+}
+.planner-main[data-view='today'] .daily-carryover {
+  margin-bottom: 12px;
+}
