@@ -1,5 +1,5 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import HomeMock from './HomeMock.jsx';
+import PlannerMock from './PlannerMock.jsx';
 
-createRoot(document.getElementById('root')).render(<HomeMock standalone/>);
+createRoot(document.getElementById('root')).render(<PlannerMock/>);
