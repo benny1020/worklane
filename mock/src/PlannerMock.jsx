@@ -97,7 +97,11 @@ function readState() {
     return initialPlannerState();
   }
 }
-export default function PlannerMock() {
+export default function PlannerMock({
+  onOpenWiki,
+  initialFilter = 'all',
+  initialBacklog = false,
+}) {
   const [data, setData] = useState(readState);
   const tasks = data.tasks.filter((t) => !t.archived);
   const archived = data.tasks.filter((t) => t.archived);
@@ -113,11 +117,11 @@ export default function PlannerMock() {
     [selected, setSelected] = useState(null),
     [modal, setModal] = useState(null),
     [toast, setToast] = useState(null),
-    [backlog, setBacklog] = useState(false),
+    [backlog, setBacklog] = useState(initialBacklog),
     [doneVisible, setDoneVisible] = useState(false),
     [goal, setGoal] = useState(null),
     [sprint, setSprint] = useState('24'),
-    [filter, setFilter] = useState('all'),
+    [filter, setFilter] = useState(initialFilter || 'all'),
     [search, setSearch] = useState(''),
     [searchIndex, setSearchIndex] = useState(0),
     [draft, setDraft] = useState(''),
@@ -415,9 +419,12 @@ export default function PlannerMock() {
               {tasks.filter((t) => t.source === 'GitLab' && isOpen(t)).length}
             </b>
           </button>
-          <button onClick={() => setModal('docs')} title="문서">
+          <button
+            onClick={() => (onOpenWiki ? onOpenWiki() : setModal('docs'))}
+            title="위키"
+          >
             <BookOpen size={17} />
-            <span>문서</span>
+            <span>위키</span>
           </button>
         </nav>
         <div className="sidebar-goals">
@@ -1134,6 +1141,7 @@ export default function PlannerMock() {
             </div>
             {detail ? (
               <Inspector
+                onOpenWiki={onOpenWiki}
                 task={detail}
                 tasks={tasks}
                 goals={goals}
@@ -2334,6 +2342,7 @@ function Month({
   );
 }
 function Inspector({
+  onOpenWiki,
   task: t,
   tasks,
   goals,
@@ -2555,6 +2564,14 @@ function Inspector({
                   : 'Controller → Service → Repository. 상태 전이와 중복 요청 처리의 테스트를 먼저 확인하세요.'}
               </p>
               <small>연결 미리보기 · 샘플</small>
+              {context === 'doc' && onOpenWiki && (
+                <button
+                  className="text-button"
+                  onClick={() => onOpenWiki('retry-policy')}
+                >
+                  위키에서 문서 읽기 <ArrowUpRight size={13} />
+                </button>
+              )}
             </div>
           )}
         </section>

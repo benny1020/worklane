@@ -1,6 +1,20 @@
-# Worklane · 업무 플래너 목업
+# Worklane · 업무 플래너와 위키 목업
 
 매일 실행할 일, 주간 배치, 월간 목표, 스프린트 추적을 **하나의 태스크**로 연결하는 인터랙티브 디자인 목업입니다.
+
+위키는 Confluence·Docmost·Outline·BookStack·BlockNote의 탐색·편집 흐름을 조사하고, Tiptap으로 실제 편집 가능한 화면을 구현했습니다. [조사 근거·설계 결정·검증 범위](WIKI_RESEARCH.md)
+
+## 위키
+
+![위키 홈](screenshots/wiki-home.jpg)
+![위키 문서 읽기와 댓글](screenshots/wiki-document.jpg)
+![위키 문서 편집](screenshots/wiki-editor.jpg)
+
+**홈 / 스페이스 / 최근 / 즐겨찾기 / 내 초안**과 페이지 트리를 연결했습니다. 목차·문장 인용 댓글·답글·해결 처리·관련 문서 미리보기·집중 모드·템플릿 생성·초안 자동 저장·게시 전 확인·버전 기록을 조작할 수 있습니다. 전체 메뉴와 문서 트리는 각각 접을 수 있습니다.
+
+직접 열기: `/?view=wiki&tab=home`, `/?view=wiki&tab=spaces`, `/?view=wiki&page=retry-policy`, `/?view=wiki&page=retry-policy&edit=1`.
+
+Confluence 연동을 검증하는 **로컬 목업**입니다. 게시와 댓글은 현재 브라우저에만 저장됩니다. 실제 Confluence 서버 반영과 실시간 공동 편집은 포함하지 않습니다.
 
 기본 진입은 **오늘**, 업무 배치는 바로 옆 **이번 주**에서 합니다. 월간·스프린트는 목표와 진행 상황을 점검할 때 사용합니다. 오늘의 상단을 압축하고, 주간의 완료 업무는 기본으로 접으며 오늘과 남은 요일에 더 넓은 공간을 배정했습니다.
 
@@ -31,7 +45,7 @@ npm run dev
 ```sh
 npm run build
 npm run preview
-node --test src/planner-model.test.js
+node --test src/planner-model.test.js src/wiki-model.test.js
 ```
 
 개발 서버와 프로덕션 미리보기는 같은 5180 포트를 사용하므로 하나씩 실행합니다.
@@ -57,6 +71,6 @@ node --test src/planner-model.test.js
 - [Astra 6.0 xhigh 디자이너 3명 검토와 실제 동작 검증](reviews/astra-integration.md)
 - 스크린샷: 1440 × 900
 
-모든 데이터는 2026년 10월 22일 기준 샘플입니다. 변경과 개인 기록은 이 브라우저의 `localStorage`에 저장되며, 화면 하단 **샘플 초기화**로 되돌릴 수 있습니다. 실제 Jira/GitLab/Confluence/AI 요청은 없습니다. 월간 목표는 로컬에서 수정할 수 있고 회의·근무시간은 고정 샘플입니다. 개인 진행 상태와 원본 상태 스냅샷을 분리하며, 실제 외부 상태 변경·MR 승인·코멘트 전송은 수행하지 않습니다. GitHub Pages 배포는 포함하지 않습니다.
+모든 데이터는 2026년 10월 22일 기준 샘플입니다. 변경과 개인 기록은 이 브라우저의 `localStorage`에 저장되며, 플래너 화면 하단 **샘플 초기화**로 플래너 데이터를 되돌릴 수 있습니다. 실제 Jira/GitLab/Confluence/AI 요청은 없습니다. 월간 목표는 로컬에서 수정할 수 있고 회의·근무시간은 고정 샘플입니다. 개인 진행 상태와 원본 상태 스냅샷을 분리하며, 실제 외부 상태 변경·MR 승인·코멘트 전송은 수행하지 않습니다. GitHub Pages 배포는 포함하지 않습니다.
 
 상세 패널: [원본 상태와 개인 계획을 함께 보기](screenshots/planner-inspector.jpg). 현재 스프린트는 두 개의 샘플 기간이며 주간 보드는 월–금입니다. Undo는 가장 최근 작업 1단계입니다.
