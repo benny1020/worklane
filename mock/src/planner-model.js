@@ -112,6 +112,7 @@ const task = (id, title, date, minutes, status, goal, extra = {}) => ({
   date,
   minutes,
   status,
+  sourceStatus: id.startsWith('TODO') ? null : status,
   goal,
   source: id.startsWith('!')
     ? 'GitLab'
@@ -171,6 +172,14 @@ export function initialTasks() {
       blocker: 'SRE 로그 접근 권한 대기',
       due: TOMORROW,
     }),
+    task(
+      'TODO-15',
+      '주문 API 변경 영향 메모',
+      '2026-10-21',
+      30,
+      'todo',
+      'order',
+    ),
     task('TODO-12', '설계 리뷰 질문 정리', TODAY, 30, 'todo', null),
     task('TODO-10', '배포 후 지표 확인', TODAY, 30, 'done', 'payment'),
     task('TODO-11', '어제 리뷰 코멘트 정리', TODAY, 15, 'done', null),
@@ -267,4 +276,128 @@ export function conflicts(tasks, task) {
   ].filter(
     (t) => start < minutesOf(t.time) + t.minutes && end > minutesOf(t.time),
   );
+}
+
+// Date-only planning helpers avoid UTC conversion and keep the demo clock fixed.
+export function shiftDate(value, days) {
+  const date = new Date(value + 'T12:00:00');
+  date.setDate(date.getDate() + days);
+  return dateKey(date);
+}
+function dateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+export function weekDays(value) {
+  const weekday = new Date(value + 'T12:00:00').getDay();
+  const monday = shiftDate(value, -(weekday === 0 ? 6 : weekday - 1));
+  return Array.from({ length: 5 }, (_, i) => {
+    const date = shiftDate(monday, i);
+    return {
+      date,
+      label: ['월', '화', '수', '목', '금'][i],
+      day: String(Number(date.slice(8))),
+    };
+  });
+}
+export function monthPeriod(value) {
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const count = new Date(year, month, 0, 12).getDate();
+  const start = `${value.slice(0, 7)}-01`;
+  const end = `${value.slice(0, 7)}-${count}`;
+  const segments = [];
+  let first = 1;
+  while (first <= count) {
+    const date = `${value.slice(0, 7)}-${String(first).padStart(2, '0')}`;
+    const weekday = new Date(date + 'T12:00:00').getDay();
+    const last = Math.min(count, first + ((7 - weekday) % 7));
+    segments.push({ first, last, days: last - first + 1 });
+    first = last + 1;
+  }
+  return { year, month, count, start, end, segments };
+}
+export function shiftMonth(value, amount) {
+  const date = new Date(value + 'T12:00:00');
+  const day = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() + amount);
+  date.setDate(
+    Math.min(
+      day,
+      new Date(date.getFullYear(), date.getMonth() + 1, 0, 12).getDate(),
+    ),
+  );
+  return dateKey(date);
+}
+export const SPRINTS = {
+  24: { start: '2026-10-19', end: '2026-10-30' },
+  25: { start: '2026-11-02', end: '2026-11-13' },
+};
+export function missedPlans(tasks, before = TODAY) {
+  return tasks
+    .filter((t) => t.status !== 'done' && t.date && t.date < before)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+export function goalHealth(tasks, goal) {
+  const open = tasks.filter((t) => t.goal === goal.id && t.status !== 'done');
+  return {
+    open: open.length,
+    unplanned: open.filter((t) => !t.date).length,
+    blocked: open.filter((t) => t.status === 'blocked').length,
+    late: open.filter((t) => t.date && t.date > goal.due).length,
+  };
+}
+export function goalsForMonth(goals, date) {
+  const month = monthPeriod(date);
+  return goals.filter((g) => g.startDate <= month.end && g.due >= month.start);
+}
+export function initialPlannerState() {
+  return {
+    version: 4,
+    tasks: initialTasks(),
+    goals: GOALS.map((g) => ({
+      ...g,
+      startDate: `2026-10-${String(g.start).padStart(2, '0')}`,
+    })),
+    weekFocus: { '2026-10-19': '재시도 구현을 마치고, 주문 API 리뷰까지.' },
+    reflections: {},
+    reflection: '',
+    focusDate: TODAY,
+  };
+}
+export function restorePlannerState(saved) {
+  const base = initialPlannerState();
+  if (
+    saved?.version !== 4 ||
+    !Array.isArray(saved.tasks) ||
+    !saved.tasks.every(
+      (t) =>
+        t.id && t.title && Number.isFinite(t.minutes) && t.status in STATUS,
+    )
+  )
+    return base;
+  const source = new Map(base.tasks.map((t) => [t.id, t.sourceStatus]));
+  return {
+    ...base,
+    ...saved,
+    tasks: saved.tasks.map((t) => ({
+      ...t,
+      sourceStatus: t.sourceStatus ?? source.get(t.id) ?? null,
+    })),
+    goals: Array.isArray(saved.goals) ? saved.goals : base.goals,
+    weekFocus: saved.weekFocus || base.weekFocus,
+    reflections: saved.reflections || {},
+  };
+}
+export function reviewTasks(tasks, view, date, sprint) {
+  if (view === 'sprint') return tasks.filter((t) => t.sprint === sprint);
+  if (view === 'month')
+    return tasks.filter((t) => t.date?.slice(0, 7) === date.slice(0, 7));
+  if (view === 'week') {
+    const first = weekDays(date)[0].date;
+    return tasks.filter(
+      (t) => t.date && t.date >= first && t.date <= shiftDate(first, 6),
+    );
+  }
+  return tasks.filter((t) => t.date === date);
 }

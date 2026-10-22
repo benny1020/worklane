@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Archive,
   ArrowDown,
   ArrowRight,
   ArrowUpRight,
@@ -37,11 +38,8 @@ import {
 import {
   TODAY,
   TOMORROW,
-  WEEK,
-  GOALS,
   MEETINGS,
   STATUS,
-  initialTasks,
   duration,
   shortDuration,
   shortDate,
@@ -51,6 +49,17 @@ import {
   conflicts,
   timeOf,
   minutesOf,
+  shiftDate,
+  shiftMonth,
+  weekDays,
+  monthPeriod,
+  missedPlans,
+  goalHealth,
+  goalsForMonth,
+  initialPlannerState,
+  restorePlannerState,
+  reviewTasks,
+  SPRINTS,
 } from './planner-model.js';
 import './planner.css';
 const VIEWS = [
@@ -60,7 +69,7 @@ const VIEWS = [
   ['sprint', '스프린트', Layers],
 ];
 const STORE = 'worklane-planner-v4';
-const isOpen = (t) => t.status !== 'done';
+const isOpen = (t) => t?.status !== 'done';
 const Icon = ({ icon: I, size = 16, ...rest }) => (
   <I size={size} strokeWidth={1.7} aria-hidden="true" {...rest} />
 );
@@ -83,29 +92,23 @@ const Source = ({ task }) => (
 );
 function readState() {
   try {
-    const v = JSON.parse(localStorage.getItem(STORE));
-    if (
-      v?.version === 4 &&
-      Array.isArray(v.tasks) &&
-      v.tasks.every(
-        (t) =>
-          t.id && t.title && Number.isFinite(t.minutes) && t.status in STATUS,
-      )
-    )
-      return v;
-  } catch {}
-  return { version: 4, tasks: initialTasks(), reflection: '' };
+    return restorePlannerState(JSON.parse(localStorage.getItem(STORE)));
+  } catch {
+    return initialPlannerState();
+  }
 }
 export default function PlannerMock() {
   const [data, setData] = useState(readState);
-  const tasks = data.tasks;
+  const tasks = data.tasks.filter((t) => !t.archived);
+  const archived = data.tasks.filter((t) => t.archived);
+  const goals = data.goals;
   const mainRef = useRef(null);
   const [view, setView] = useState(() =>
     VIEWS.some((v) => v[0] === new URLSearchParams(location.search).get('view'))
       ? new URLSearchParams(location.search).get('view')
       : 'today',
   );
-  const [day, setDay] = useState(TODAY),
+  const [day, setDay] = useState(data.focusDate || TODAY),
     [collapsed, setCollapsed] = useState(false),
     [selected, setSelected] = useState(null),
     [modal, setModal] = useState(null),
@@ -120,13 +123,53 @@ export default function PlannerMock() {
     [draft, setDraft] = useState(''),
     [newDate, setNewDate] = useState(TODAY),
     [newMinutes, setNewMinutes] = useState(30),
+    [newGoal, setNewGoal] = useState(''),
+    [newSprint, setNewSprint] = useState(''),
+    [goalDraft, setGoalDraft] = useState(null),
     [saved, setSaved] = useState(true);
   const detail = tasks.find((t) => t.id === selected);
   const daily = tasks.filter((t) => t.date === day);
+  const dailyGoal = goals.find((g) => daily.some((t) => t.goal === g.id));
   const open = daily.filter(isOpen);
   const done = daily.filter((t) => !isOpen(t));
   const unplanned = tasks.filter((t) => !t.date && isOpen(t));
   const cap = capacity(tasks, day);
+  const week = weekDays(day);
+  const weekKey = week[0].date;
+  const month = monthPeriod(day);
+  const missed = missedPlans(tasks);
+  const upcomingWeek = week.filter((d) => d.date >= TODAY);
+  const weekRemaining = upcomingWeek.reduce(
+    (n, d) => n + Math.max(0, capacity(tasks, d.date).remaining),
+    0,
+  );
+  const weekOver = week.filter(
+    (d) => capacity(tasks, d.date).remaining < 0,
+  ).length;
+  const reviewed = reviewTasks(tasks, view, day, sprint);
+  const reviewKey =
+    view === 'sprint'
+      ? `sprint-${sprint}`
+      : view === 'month'
+        ? day.slice(0, 7)
+        : view === 'week'
+          ? `week-${weekKey}`
+          : day;
+  const reviewLabel =
+    view === 'today'
+      ? `${shortDate(day)} 하루`
+      : view === 'week'
+        ? `${shortDate(weekKey)} 주간`
+        : view === 'month'
+          ? `${month.month}월`
+          : `Sprint ${sprint}`;
+  const addDate =
+    view === 'sprint' &&
+    (day < SPRINTS[sprint].start || day > SPRINTS[sprint].end)
+      ? SPRINTS[sprint].start
+      : view === 'week' && day > week[4].date
+        ? week[4].date
+        : day;
   const results = tasks.filter((t) =>
     (t.title + ' ' + t.id).toLowerCase().includes(search.toLowerCase()),
   );
@@ -138,16 +181,20 @@ export default function PlannerMock() {
       setSaved(false);
     }
   }, [data]);
+  useEffect(() => {
+    setData((p) => (p.focusDate === day ? p : { ...p, focusDate: day }));
+  }, [day]);
   function notify(text, undo) {
     setToast({ text, undo });
   }
   function update(fn, text) {
-    const before = data;
+    const beforeTasks = data.tasks;
     setData((p) => ({ ...p, tasks: fn(p.tasks) }));
-    if (text) notify(text, () => setData(before));
-    else setToast(null);
+    notify(text || '내 계획을 변경했어요', () =>
+      setData((p) => ({ ...p, tasks: beforeTasks })),
+    );
   }
-  function patch(id, changes, text) {
+  function patch(id, changes, text = `${id} · 변경 내용을 저장했어요`) {
     update(
       (ts) => ts.map((t) => (t.id === id ? { ...t, ...changes } : t)),
       text,
@@ -179,10 +226,12 @@ export default function PlannerMock() {
     url.searchParams.set('view', v);
     history.replaceState(null, '', url);
   }
-  function quick(date = day) {
+  function quick(date = addDate, goalId = '') {
     setNewDate(date || '');
     setDraft('');
     setNewMinutes(30);
+    setNewGoal(goalId);
+    setNewSprint(view === 'sprint' ? sprint : '');
     setModal('create');
   }
   function create(e) {
@@ -194,14 +243,54 @@ export default function PlannerMock() {
       date: newDate || null,
       minutes: Number(newMinutes),
       status: 'todo',
-      goal: null,
+      goal: newGoal || null,
+      sourceStatus: null,
       source: '개인',
-      sprint: null,
+      sprint: newSprint || null,
       priority: false,
       notes: [],
     };
     update((ts) => [...ts, item], '할 일을 추가했어요');
     setModal(null);
+  }
+  function editGoal(existing = null) {
+    setGoalDraft(
+      existing
+        ? { ...existing }
+        : {
+            id: `goal-${Date.now()}`,
+            title: '',
+            description: '',
+            project: 'Personal',
+            color: ['green', 'blue', 'purple'][goals.length % 3],
+            startDate: month.start,
+            due: month.end,
+            milestone: '',
+          },
+    );
+    setModal('goal');
+  }
+  function saveGoal(e) {
+    e.preventDefault();
+    if (!goalDraft?.title.trim() || goalDraft.due < goalDraft.startDate) return;
+    const beforeGoals = data.goals;
+    const edited = {
+      ...goalDraft,
+      title: goalDraft.title.trim(),
+      milestone: goalDraft.milestone.trim() || goalDraft.title.trim(),
+    };
+    setData((p) => ({
+      ...p,
+      goals: p.goals.some((g) => g.id === edited.id)
+        ? p.goals.map((g) => (g.id === edited.id ? edited : g))
+        : [...p.goals, edited],
+    }));
+    setDay(edited.due);
+    setGoal(edited.id);
+    setModal(null);
+    notify('목표를 저장했어요', () =>
+      setData((p) => ({ ...p, goals: beforeGoals })),
+    );
   }
   useEffect(() => {
     const fn = (e) => {
@@ -221,7 +310,7 @@ export default function PlannerMock() {
     };
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
-  }, [day]);
+  }, [day, view, sprint]);
   const common = { toggle, open: setSelected, move, patch };
   const dayLabel =
     day === TODAY
@@ -231,8 +320,11 @@ export default function PlannerMock() {
         : `${shortDate(day)} 계획`;
   const heading = {
     today: '오늘의 업무',
-    week: '이번 주 계획',
-    month: '이번 달의 목표와 계획',
+    week: weekKey === weekDays(TODAY)[0].date ? '이번 주 계획' : '주간 계획',
+    month:
+      day.slice(0, 7) === TODAY.slice(0, 7)
+        ? '이번 달의 목표와 계획'
+        : '월간 목표와 계획',
     sprint: '스프린트 계획',
   };
   const subheading = {
@@ -271,8 +363,13 @@ export default function PlannerMock() {
         <span className="nav-caption">MY WORKSPACE</span>
         <nav>
           <button
-            className="active"
-            onClick={() => changeView('today')}
+            className={
+              !backlog && !['jira', 'review'].includes(filter) ? 'active' : ''
+            }
+            onClick={() => {
+              setBacklog(false);
+              changeView('today');
+            }}
             title="내 플래너"
           >
             <LayoutDashboard size={17} />
@@ -280,6 +377,7 @@ export default function PlannerMock() {
             <span className="nav-dot" />
           </button>
           <button
+            className={backlog ? 'active' : ''}
             onClick={() => {
               setBacklog(!backlog);
               setSelected(null);
@@ -291,7 +389,9 @@ export default function PlannerMock() {
             <b>{unplanned.length}</b>
           </button>
           <button
+            className={view === 'sprint' && filter === 'jira' ? 'active' : ''}
             onClick={() => {
+              setBacklog(false);
               changeView('sprint');
               setFilter('jira');
             }}
@@ -301,7 +401,9 @@ export default function PlannerMock() {
             <span>Jira 업무</span>
           </button>
           <button
+            className={view === 'sprint' && filter === 'review' ? 'active' : ''}
             onClick={() => {
+              setBacklog(false);
               changeView('sprint');
               setFilter('review');
             }}
@@ -319,12 +421,13 @@ export default function PlannerMock() {
           </button>
         </nav>
         <div className="sidebar-goals">
-          <span className="nav-caption">이번 달의 방향</span>
-          {GOALS.map((g) => (
+          <span className="nav-caption">연결된 목표</span>
+          {goals.map((g) => (
             <button
               key={g.id}
               onClick={() => {
                 changeView('month');
+                setDay(g.due);
                 setGoal(g.id);
               }}
             >
@@ -400,7 +503,13 @@ export default function PlannerMock() {
             <div className="heading-actions">
               <button className="button" onClick={() => setModal('wrap')}>
                 <CheckCheck size={15} />
-                {view === 'today' ? '하루 마무리' : '계획 돌아보기'}
+                {view === 'today'
+                  ? '하루 마무리'
+                  : view === 'week'
+                    ? '주간 마무리'
+                    : view === 'month'
+                      ? '월간 마무리'
+                      : '스프린트 회고'}
               </button>
               <button className="button primary" onClick={() => quick()}>
                 <Plus size={16} />할 일 추가<kbd>⌘ N</kbd>
@@ -417,13 +526,16 @@ export default function PlannerMock() {
                   onClick={() => changeView(id)}
                 >
                   <I size={16} />
-                  {label}
+                  {id === 'today' && day !== TODAY
+                    ? '일간'
+                    : id === 'week' && weekKey !== weekDays(TODAY)[0].date
+                      ? '주간'
+                      : id === 'month' && day.slice(0, 7) !== TODAY.slice(0, 7)
+                        ? '월간'
+                        : label}
                   {id === 'today' && (
                     <span>
-                      {
-                        tasks.filter((t) => t.date === TODAY && isOpen(t))
-                          .length
-                      }
+                      {tasks.filter((t) => t.date === day && isOpen(t)).length}
                     </span>
                   )}
                 </button>
@@ -491,6 +603,22 @@ export default function PlannerMock() {
                       </span>
                     </p>
                   </div>
+                  {missed.length > 0 && day >= TODAY && (
+                    <details className="week-carryover daily-carryover">
+                      <summary>
+                        지난 계획에서 남은 일 {missed.length}개 ·{' '}
+                        {duration(missed.reduce((n, t) => n + t.minutes, 0))}{' '}
+                        <span>날짜 다시 잡기</span>
+                      </summary>
+                      <Carryover
+                        tasks={tasks}
+                        missed={missed}
+                        target={day}
+                        open={setSelected}
+                        move={move}
+                      />
+                    </details>
+                  )}
                   <div className="daily-layout">
                     <section className="daily-tasks">
                       <div className="section-title">
@@ -526,7 +654,11 @@ export default function PlannerMock() {
                       {!open.length && (
                         <div className="empty-state">
                           <CircleCheck size={26} />
-                          <b>계획한 일을 모두 마쳤어요.</b>
+                          <b>
+                            {daily.length
+                              ? '계획한 일을 모두 마쳤어요.'
+                              : '아직 계획한 일이 없어요.'}
+                          </b>
                           <button
                             className="text-button"
                             onClick={() => setModal('wrap')}
@@ -556,46 +688,51 @@ export default function PlannerMock() {
                         done.map((t) => (
                           <TaskRow key={t.id} task={t} {...common} />
                         ))}
-                      <div className="brief">
-                        <div className="brief-icon">
-                          <Sparkles size={17} />
+                      {day === TODAY && (
+                        <div className="brief">
+                          <div className="brief-icon">
+                            <Sparkles size={17} />
+                          </div>
+                          <div>
+                            <h3>미리 챙겨두면 좋은 일</h3>
+                            <p>
+                              {tasks.find((t) => t.id === 'PAY-291')?.date ===
+                              day
+                                ? '환불 웹훅 검증을 오늘 계획에 담았어요.'
+                                : '환불 웹훅 검증이 내일 마감이에요.'}{' '}
+                              {isOpen(tasks.find((t) => t.id === 'OPS-91'))
+                                ? '막힌 일은 접근 권한부터 확인해보세요.'
+                                : ''}
+                            </p>
+                            <button onClick={() => setSelected('PAY-291')}>
+                              PAY-291 확인
+                              <ArrowUpRight size={12} />
+                            </button>
+                            <button onClick={() => setSelected('OPS-91')}>
+                              막힌 일 살펴보기
+                              <ArrowRight size={12} />
+                            </button>
+                          </div>
                         </div>
-                        <div>
-                          <h3>미리 챙겨두면 좋은 일</h3>
-                          <p>
-                            {tasks.find((t) => t.id === 'PAY-291')?.date === day
-                              ? '환불 웹훅 검증을 오늘 계획에 담았어요.'
-                              : '환불 웹훅 검증이 내일 마감이에요.'}{' '}
-                            {isOpen(tasks.find((t) => t.id === 'OPS-91'))
-                              ? '막힌 일은 접근 권한부터 확인해보세요.'
-                              : ''}
-                          </p>
-                          <button onClick={() => setSelected('PAY-291')}>
-                            PAY-291 확인
-                            <ArrowUpRight size={12} />
-                          </button>
-                          <button onClick={() => setSelected('OPS-91')}>
-                            막힌 일 살펴보기
-                            <ArrowRight size={12} />
-                          </button>
+                      )}
+                      {dailyGoal && (
+                        <div className="connected-goal">
+                          <Target size={17} />
+                          <div>
+                            <span>이 날의 일이 이어지는 목표</span>
+                            <button
+                              onClick={() => {
+                                changeView('month');
+                                setGoal(dailyGoal.id);
+                              }}
+                            >
+                              {dailyGoal.title}
+                              <ArrowUpRight size={12} />
+                            </button>
+                          </div>
+                          <Progress tasks={tasks} goal={dailyGoal.id} />
                         </div>
-                      </div>
-                      <div className="connected-goal">
-                        <Target size={17} />
-                        <div>
-                          <span>오늘의 일이 이어지는 목표</span>
-                          <button
-                            onClick={() => {
-                              changeView('month');
-                              setGoal('payment');
-                            }}
-                          >
-                            결제 실패를 안전하게 복구하기
-                            <ArrowUpRight size={12} />
-                          </button>
-                        </div>
-                        <Progress tasks={tasks} goal="payment" />
-                      </div>
+                      )}
                     </section>
                     <aside className="day-agenda">
                       <div className="section-title">
@@ -637,11 +774,45 @@ export default function PlannerMock() {
                 <>
                   <div className="section-top">
                     <div>
-                      <h2>
-                        10월 19일 – 23일 <span>Week 43</span>
-                      </h2>
-                      <p>
-                        이번 주의 방향: 재시도 구현을 마치고, 주문 API 리뷰까지.
+                      <div className="period-controls">
+                        <h2>
+                          {shortDate(week[0].date)} – {shortDate(week[4].date)}{' '}
+                          <span>{weekKey.slice(0, 4)}년</span>
+                        </h2>
+                        <PeriodNav
+                          label="주"
+                          previous={() => setDay(shiftDate(day, -7))}
+                          next={() => setDay(shiftDate(day, 7))}
+                          reset={() => setDay(TODAY)}
+                        />
+                      </div>
+                      <label className="week-focus">
+                        이번 주의 방향
+                        <input
+                          aria-label="이번 주의 방향"
+                          placeholder="이번 주에 꼭 이루고 싶은 한 가지"
+                          value={data.weekFocus[weekKey] || ''}
+                          onChange={(e) =>
+                            setData((p) => ({
+                              ...p,
+                              weekFocus: {
+                                ...p.weekFocus,
+                                [weekKey]: e.target.value,
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      <p className="week-capacity">
+                        {upcomingWeek.length
+                          ? `오늘부터 남은 ${upcomingWeek.length}일 · 추가 배치 가능 ${duration(weekRemaining)}`
+                          : '지난 주의 계획과 완료 기록'}
+                        {weekOver > 0 && (
+                          <span className="amber-text">
+                            {' '}
+                            · {weekOver}일 계획 초과
+                          </span>
+                        )}
                       </p>
                     </div>
                     <button
@@ -652,8 +823,22 @@ export default function PlannerMock() {
                       미계획 {unplanned.length}개 배치
                     </button>
                   </div>
+                  {missed.length > 0 && week[4].date >= TODAY && (
+                    <details className="week-carryover">
+                      <summary>
+                        지난 계획에 미완료 {missed.length}개 · 다시 배치하기
+                      </summary>
+                      <Carryover
+                        tasks={tasks}
+                        missed={missed}
+                        target={day < TODAY ? TODAY : day}
+                        open={setSelected}
+                        move={move}
+                      />
+                    </details>
+                  )}
                   <div className="week-grid">
-                    {WEEK.map((d) => {
+                    {week.map((d) => {
                       const ts = tasks.filter((t) => t.date === d.date);
                       const c = capacity(tasks, d.date);
                       return (
@@ -671,7 +856,16 @@ export default function PlannerMock() {
                           <header>
                             <div>
                               <h3>
-                                {d.label} <b>{d.day}</b>
+                                <button
+                                  className="day-open"
+                                  aria-label={`${shortDate(d.date)} 일간 계획 열기`}
+                                  onClick={() => {
+                                    setDay(d.date);
+                                    changeView('today');
+                                  }}
+                                >
+                                  {d.label} <b>{d.day}</b>
+                                </button>
                                 <small>{ts.filter(isOpen).length}개</small>
                                 {d.date === TODAY && <span>오늘</span>}
                               </h3>
@@ -698,7 +892,7 @@ export default function PlannerMock() {
                               ),
                             )}
                           </div>
-                          <div className="week-task-list">
+                          <WeekTaskList>
                             {ts.filter(isOpen).map((t) => (
                               <TaskCard key={t.id} task={t} {...common} />
                             ))}
@@ -730,7 +924,7 @@ export default function PlannerMock() {
                             >
                               <Plus size={14} />할 일 추가
                             </button>
-                          </div>
+                          </WeekTaskList>
                           <footer>
                             {c.remaining >= 0
                               ? `${duration(c.remaining)} 여유`
@@ -751,13 +945,13 @@ export default function PlannerMock() {
                       className="text-button"
                       onClick={() => setModal('wrap')}
                     >
-                      이번 주 돌아보기
+                      이 주 돌아보기
                       <ArrowRight size={14} />
                     </button>
                   </div>
                   <div className="week-goals">
-                    <h3>이번 주의 일이 향하는 곳</h3>
-                    {GOALS.map((g) => (
+                    <h3>이 주의 일이 향하는 곳</h3>
+                    {goals.map((g) => (
                       <button
                         key={g.id}
                         onClick={() => {
@@ -781,6 +975,12 @@ export default function PlannerMock() {
                   setGoal={setGoal}
                   open={setSelected}
                   changeView={changeView}
+                  goals={goals}
+                  day={day}
+                  setDay={setDay}
+                  editGoal={editGoal}
+                  quick={quick}
+                  move={move}
                 />
               )}
               {view === 'sprint' && (
@@ -819,7 +1019,7 @@ export default function PlannerMock() {
                   </div>
                   <div className="sprint-summary">
                     <Target size={18} />
-                    <span>내 담당 업무</span>
+                    <span>내 진행 상태 · 원본과 별도</span>
                     <b>
                       {
                         tasks.filter(
@@ -883,8 +1083,8 @@ export default function PlannerMock() {
                             if (tasks.some((t) => t.id === id))
                               patch(
                                 id,
-                                { status },
-                                `${id} · ${STATUS[status]}으로 변경했어요`,
+                                { status, sprint },
+                                `${id} · Sprint ${sprint} · 내 ${STATUS[status]}으로 변경했어요`,
                               );
                           }}
                         >
@@ -913,13 +1113,15 @@ export default function PlannerMock() {
                   <div className="sprint-note">
                     <CircleCheck size={15} />
                     개인 계획 날짜와 팀 스프린트는 따로 관리해요.
-                    <button
-                      className="text-button"
-                      onClick={() => setModal('rollover')}
-                    >
-                      남은 일 다음 스프린트로
-                      <ArrowRight size={13} />
-                    </button>
+                    {sprint === '24' && (
+                      <button
+                        className="text-button"
+                        onClick={() => setModal('rollover')}
+                      >
+                        남은 일 다음 스프린트로
+                        <ArrowRight size={13} />
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -928,10 +1130,19 @@ export default function PlannerMock() {
               <Inspector
                 task={detail}
                 tasks={tasks}
+                goals={goals}
                 patch={patch}
                 move={move}
                 close={() => setSelected(null)}
                 toggle={toggle}
+                archive={() => {
+                  patch(
+                    detail.id,
+                    { archived: true },
+                    `${detail.id} · 보관했어요`,
+                  );
+                  setSelected(null);
+                }}
               />
             ) : backlog ? (
               <aside className="backlog-panel">
@@ -957,9 +1168,23 @@ export default function PlannerMock() {
                     <TaskCard task={t} {...common} />
                     <button
                       className="text-button"
-                      onClick={() => move(t.id, TODAY)}
+                      onClick={() =>
+                        view === 'sprint'
+                          ? patch(
+                              t.id,
+                              {
+                                sprint,
+                                date: addDate,
+                                time: t.date === addDate ? t.time : undefined,
+                              },
+                              `${t.id} · Sprint ${sprint}에 계획했어요`,
+                            )
+                          : move(t.id, addDate)
+                      }
                     >
-                      오늘에 배치
+                      {view === 'sprint'
+                        ? `Sprint ${sprint} · ${shortDate(addDate)}에 배치`
+                        : `${shortDate(addDate)}에 배치`}
                       <ArrowRight size={13} />
                     </button>
                   </div>
@@ -983,11 +1208,16 @@ export default function PlannerMock() {
             <i className="green-dot" />
             {saved ? '이 브라우저에 저장됨' : '임시 메모리 · 저장소 사용 불가'}
           </span>
+          <button onClick={() => setModal('archive')}>
+            보관함{archived.length ? ` ${archived.length}` : ''}
+          </button>
           <span>인터랙티브 목업 · 2026.10.22 기준 샘플 데이터</span>
           <button
             onClick={() => {
               const before = data;
-              setData({ version: 4, tasks: initialTasks(), reflection: '' });
+              setData(initialPlannerState());
+              setDay(TODAY);
+              setGoal(null);
               notify('샘플을 처음 상태로 되돌렸어요', () => setData(before));
             }}
           >
@@ -1019,12 +1249,13 @@ export default function PlannerMock() {
         <Modal
           title={
             {
+              archive: '보관한 개인 할 일',
               create: '새로운 할 일',
+              goal: goals.some((g) => g.id === goalDraft?.id)
+                ? '월간 목표 수정'
+                : '월간 목표 추가',
               search: '빠르게 찾기',
-              wrap:
-                view === 'today'
-                  ? '오늘을 정리하고, 내일을 가볍게'
-                  : '이번 주를 돌아보기',
+              wrap: `${reviewLabel} 돌아보기`,
               assistant: '곁에서 챙기는 Assistant',
               settings: '플래너 설정',
               docs: '업무 문서',
@@ -1035,6 +1266,36 @@ export default function PlannerMock() {
           close={() => setModal(null)}
           wide={modal === 'wrap'}
         >
+          {modal === 'archive' && (
+            <div className="archived-tasks">
+              <p>
+                보관한 일은 계획과 업무량에서 빠집니다. 언제든 원래 계획으로
+                복원할 수 있어요.
+              </p>
+              {archived.map((t) => (
+                <article key={t.id}>
+                  <div>
+                    <b>{t.title}</b>
+                    <p>
+                      {t.id} ·{' '}
+                      {t.date ? shortDate(t.date) + ' 계획' : '날짜 미정'}
+                    </p>
+                  </div>
+                  <button
+                    className="button"
+                    onClick={() =>
+                      patch(t.id, { archived: false }, `${t.id} · 복원했어요`)
+                    }
+                  >
+                    복원
+                  </button>
+                </article>
+              ))}
+              {!archived.length && (
+                <div className="empty-state">보관한 할 일이 없어요.</div>
+              )}
+            </div>
+          )}
           {modal === 'create' && (
             <form onSubmit={create}>
               <input
@@ -1070,6 +1331,35 @@ export default function PlannerMock() {
                   </select>
                 </label>
               </div>
+              <div className="create-fields">
+                <label>
+                  연결 목표
+                  <select
+                    aria-label="새 할 일 연결 목표"
+                    value={newGoal}
+                    onChange={(e) => setNewGoal(e.target.value)}
+                  >
+                    <option value="">목표 없이 시작</option>
+                    {goals.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  스프린트
+                  <select
+                    aria-label="새 할 일 스프린트"
+                    value={newSprint}
+                    onChange={(e) => setNewSprint(e.target.value)}
+                  >
+                    <option value="">지정 안 함</option>
+                    <option value="24">Sprint 24</option>
+                    <option value="25">Sprint 25</option>
+                  </select>
+                </label>
+              </div>
               <p className="helper">
                 개인 할 일로 생성돼요. 날짜를 비우면 계획함에 보관합니다.
               </p>
@@ -1084,6 +1374,89 @@ export default function PlannerMock() {
                 <button className="button primary" disabled={!draft.trim()}>
                   할 일 추가
                   <ArrowRight size={14} />
+                </button>
+              </div>
+            </form>
+          )}
+          {modal === 'goal' && goalDraft && (
+            <form onSubmit={saveGoal}>
+              <input
+                autoFocus
+                className="create-title"
+                aria-label="목표 제목"
+                placeholder="이번 달에 어떤 결과를 만들까요?"
+                required
+                value={goalDraft.title}
+                onChange={(e) =>
+                  setGoalDraft({ ...goalDraft, title: e.target.value })
+                }
+              />
+              <label className="goal-form-field">
+                성공 기준
+                <textarea
+                  aria-label="목표 성공 기준"
+                  placeholder="이 목표를 마쳤다고 판단할 수 있는 기준"
+                  value={goalDraft.description}
+                  onChange={(e) =>
+                    setGoalDraft({ ...goalDraft, description: e.target.value })
+                  }
+                />
+              </label>
+              <div className="create-fields">
+                <label>
+                  시작일
+                  <input
+                    type="date"
+                    required
+                    aria-label="목표 시작일"
+                    value={goalDraft.startDate}
+                    onInput={(e) =>
+                      setGoalDraft({ ...goalDraft, startDate: e.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  목표일
+                  <input
+                    type="date"
+                    required
+                    min={goalDraft.startDate}
+                    aria-label="목표일"
+                    value={goalDraft.due}
+                    onInput={(e) =>
+                      setGoalDraft({ ...goalDraft, due: e.target.value })
+                    }
+                  />
+                </label>
+              </div>
+              <label className="goal-form-field">
+                마일스톤
+                <input
+                  aria-label="목표 마일스톤"
+                  placeholder="예: 결제 안정화 릴리스"
+                  value={goalDraft.milestone}
+                  onChange={(e) =>
+                    setGoalDraft({ ...goalDraft, milestone: e.target.value })
+                  }
+                />
+              </label>
+              <p className="helper">
+                내 월간 목표로 저장됩니다. 연결 업무의 원본 마감은 바뀌지
+                않아요.
+              </p>
+              <div className="modal-actions">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => setModal(null)}
+                >
+                  취소
+                </button>
+                <button
+                  className="button primary"
+                  disabled={!goalDraft.title.trim()}
+                >
+                  목표 저장
                 </button>
               </div>
             </form>
@@ -1141,54 +1514,48 @@ export default function PlannerMock() {
                 <CircleCheck size={24} />
                 <div>
                   <b>
-                    {
-                      tasks.filter(
-                        (t) =>
-                          t.status === 'done' &&
-                          (view === 'today'
-                            ? t.date === day
-                            : WEEK.some((d) => d.date === t.date)),
-                      ).length
-                    }
+                    {reviewed.filter((t) => t.status === 'done').length}
                     개의 일을 마쳤어요.
                   </b>
                   <p>미완료 업무는 확인하고 원하는 날짜로 옮기세요.</p>
                 </div>
               </div>
               <div className="wrap-tasks">
-                {tasks
-                  .filter(
-                    (t) =>
-                      isOpen(t) &&
-                      (view === 'today'
-                        ? t.date === day
-                        : WEEK.some((d) => d.date === t.date)),
-                  )
-                  .map((t) => (
-                    <div key={t.id}>
-                      <span>
-                        <Source task={t} />
-                        <b>{t.title}</b>
-                      </span>
-                      <label>
-                        계획
-                        <input
-                          type="date"
-                          aria-label={`${t.id} 마무리 계획 날짜`}
-                          value={t.date || ''}
-                          onInput={(e) => move(t.id, e.target.value)}
-                        />
-                      </label>
-                    </div>
-                  ))}
+                {reviewed.filter(isOpen).map((t) => (
+                  <div key={t.id}>
+                    <span>
+                      <Source task={t} />
+                      <b>{t.title}</b>
+                    </span>
+                    <label>
+                      계획
+                      <input
+                        type="date"
+                        aria-label={`${t.id} 마무리 계획 날짜`}
+                        value={t.date || ''}
+                        onInput={(e) => move(t.id, e.target.value)}
+                      />
+                    </label>
+                  </div>
+                ))}
               </div>
               <label className="reflection">
                 다음에 이어갈 때 기억할 것
                 <textarea
                   placeholder="잘된 점, 막힌 이유, 내일 먼저 할 일…"
-                  value={data.reflection}
+                  value={
+                    data.reflections[reviewKey] ??
+                    (reviewKey === TODAY ? data.reflection : '') ??
+                    ''
+                  }
                   onChange={(e) =>
-                    setData({ ...data, reflection: e.target.value })
+                    setData((p) => ({
+                      ...p,
+                      reflections: {
+                        ...p.reflections,
+                        [reviewKey]: e.target.value,
+                      },
+                    }))
                   }
                 />
               </label>
@@ -1197,12 +1564,23 @@ export default function PlannerMock() {
                 <button
                   className="button primary"
                   onClick={() => {
-                    setDay(TOMORROW);
-                    changeView('today');
+                    setDay(
+                      view === 'today'
+                        ? shiftDate(day, 1)
+                        : view === 'month'
+                          ? shiftMonth(day, 1)
+                          : view === 'sprint'
+                            ? SPRINTS['25'].start
+                            : shiftDate(day, 7),
+                    );
+                    if (view === 'sprint') setSprint('25');
+                    changeView(view === 'today' ? 'today' : view);
                     setModal(null);
                   }}
                 >
-                  내일 계획 확인
+                  {view === 'sprint' && sprint === '25'
+                    ? '스프린트 계획 보기'
+                    : `다음 ${view === 'today' ? '날' : view === 'week' ? '주' : view === 'month' ? '달' : '스프린트'} 계획 확인`}
                   <ArrowRight size={14} />
                 </button>
               </div>
@@ -1337,11 +1715,6 @@ export default function PlannerMock() {
     </div>
   );
 }
-function shiftDate(d, n) {
-  const date = new Date(d + 'T12:00:00');
-  date.setDate(date.getDate() + n);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
 function Capacity({ cap, large = false }) {
   return (
     <div
@@ -1407,8 +1780,7 @@ function TaskRow({ task: t, toggle, open, patch }) {
             </em>
           ) : (
             <>
-              <i className={`status-dot ${t.status}`} />
-              {STATUS[t.status]}
+              <i className={`status-dot ${t.status}`} />내 {STATUS[t.status]}
               {t.mr && t.source !== 'GitLab' && (
                 <span className="mr-chip">
                   <GitPullRequest size={11} />
@@ -1416,6 +1788,11 @@ function TaskRow({ task: t, toggle, open, patch }) {
                 </span>
               )}
             </>
+          )}
+          {t.due && (
+            <span className={t.due <= TODAY ? 'amber-text' : ''}>
+              {t.due === TODAY ? '오늘 마감' : `${shortDate(t.due)} 마감`}
+            </span>
           )}
         </span>
       </button>
@@ -1471,22 +1848,26 @@ function TaskCard({ task: t, toggle, open, sprintView = false }) {
           <Clock3 size={11} />
           {duration(t.minutes)}
         </span>
-        {sprintView ? (
+        {sprintView && (
           <span>{t.date ? `${shortDate(t.date)} 계획` : '날짜 미정'}</span>
-        ) : t.status === 'done' ? (
-          <span className="green-text">완료</span>
-        ) : t.priority ? (
-          <span className="green-text">우선순위</span>
-        ) : t.due ? (
-          <span className={t.due <= TODAY ? 'amber-text' : ''}>
-            {shortDate(t.due)} 마감
-          </span>
-        ) : null}
+        )}
+        {t.status === 'done' ? (
+          <span className="green-text">내 작업 완료</span>
+        ) : (
+          <>
+            {t.priority && <span className="green-text">우선순위</span>}
+            {t.due && (
+              <span className={t.due <= TODAY ? 'amber-text' : ''}>
+                {shortDate(t.due)} 마감
+              </span>
+            )}
+          </>
+        )}
       </div>
     </article>
   );
 }
-function Agenda({ day, tasks, open, quick }) {
+function Agenda({ day, tasks, open }) {
   const rows = [
     ...MEETINGS.filter((m) => m.date === day).map((m) => ({
       ...m,
@@ -1499,7 +1880,9 @@ function Agenda({ day, tasks, open, quick }) {
       {rows.map((r, i) => (
         <div className="agenda-row" key={r.id || r.time}>
           <time>{r.time}</time>
-          <div className={`agenda-event ${r.meeting ? 'meeting' : 'work'}`}>
+          <div
+            className={`agenda-event ${r.meeting ? 'meeting' : 'work'} ${r.status === 'done' ? 'done' : ''}`}
+          >
             {r.meeting ? (
               <>
                 <span className="agenda-event-label">
@@ -1512,8 +1895,13 @@ function Agenda({ day, tasks, open, quick }) {
             ) : (
               <button onClick={() => open(r.id)}>
                 <span className="agenda-event-label">
-                  <span className="green-dot" />
-                  집중 · {duration(r.minutes)}
+                  {r.status === 'done' ? (
+                    <CheckCheck size={12} />
+                  ) : (
+                    <span className="green-dot" />
+                  )}
+                  {r.status === 'done' ? '완료' : '집중'} ·{' '}
+                  {duration(r.minutes)}
                 </span>
                 <b>{r.title}</b>
                 <small>
@@ -1531,166 +1919,426 @@ function Agenda({ day, tasks, open, quick }) {
         ) && (
           <div className="agenda-row">
             <time>17:00</time>
-            <button className="agenda-free" onClick={() => quick(day)}>
-              <Plus size={12} />
-              비워둔 시간 <span>예상하지 못한 일을 위해</span>
-            </button>
+            <div className="agenda-free">
+              <Clock3 size={12} />
+              여유 시간 <span>예상하지 못한 일을 위해 비워둬요.</span>
+            </div>
           </div>
         )}
     </div>
   );
 }
-function Month({ tasks, goal, setGoal, open, changeView }) {
-  const visible = goal ? GOALS.filter((g) => g.id === goal) : GOALS;
+function WeekTaskList({ children }) {
+  const ref = useRef(null);
+  const [more, setMore] = useState(false);
+  const measure = () => {
+    const el = ref.current;
+    if (el) setMore(el.scrollHeight - el.scrollTop > el.clientHeight + 8);
+  };
+  useEffect(() => {
+    measure();
+    const observer = new ResizeObserver(measure);
+    const el = ref.current;
+    if (el) {
+      observer.observe(el);
+      Array.from(el.children).forEach((child) => observer.observe(child));
+    }
+    return () => observer.disconnect();
+  }, [children]);
+  return (
+    <div className="week-task-area">
+      <div className="week-task-list" ref={ref} onScroll={measure}>
+        {children}
+      </div>
+      {more && (
+        <button
+          className="week-scroll-hint"
+          onClick={() =>
+            ref.current?.scrollBy({ top: 200, behavior: 'smooth' })
+          }
+        >
+          아래에 더 있어요 <ArrowDown size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+function PeriodNav({ label, previous, next, reset }) {
+  return (
+    <div className="date-step">
+      <button aria-label={`이전 ${label} 보기`} onClick={previous}>
+        <ChevronLeft size={14} />
+      </button>
+      <button onClick={reset}>{label === '주' ? '이번 주' : '이번 달'}</button>
+      <button aria-label={`다음 ${label} 보기`} onClick={next}>
+        <ChevronRight size={14} />
+      </button>
+    </div>
+  );
+}
+function Carryover({ tasks, missed, target, open, move }) {
+  const [dates, setDates] = useState({});
+  return (
+    <section className="carryover-panel" aria-label="지난 계획에서 남은 일">
+      <header>
+        <div>
+          <Flag size={14} />
+          <b>
+            지난 계획에서 남은 일 <span>{missed.length}</span>
+          </b>
+        </div>
+        <small>다시 배치할 날짜를 골라주세요.</small>
+      </header>
+      {missed.map((t) => {
+        const date = dates[t.id] || target;
+        const after = capacity(moveTask(tasks, t.id, date), date).remaining;
+        return (
+          <div className="carryover-row" key={t.id}>
+            <button className="carryover-task" onClick={() => open(t.id)}>
+              <b>{t.title}</b>
+              <span>
+                <Source task={t} />
+                {shortDate(t.date)} 계획 · {duration(t.minutes)}
+                {t.due && ` · 원본 마감 ${shortDate(t.due)}`}
+              </span>
+            </button>
+            <div className="carryover-actions">
+              <label>
+                <input
+                  type="date"
+                  aria-label={`${t.id} 다시 계획할 날짜`}
+                  value={date}
+                  onInput={(e) =>
+                    setDates({ ...dates, [t.id]: e.target.value })
+                  }
+                />
+                <small className={after < 0 ? 'amber-text' : ''}>
+                  배치 후 {duration(Math.abs(after))}{' '}
+                  {after < 0 ? '초과' : '여유'}
+                </small>
+              </label>
+              <button className="button" onClick={() => move(t.id, date)}>
+                이 날로
+              </button>
+              <button className="text-button" onClick={() => move(t.id, null)}>
+                계획함
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+function Month({
+  tasks,
+  goals,
+  goal,
+  setGoal,
+  open,
+  changeView,
+  day,
+  setDay,
+  editGoal,
+  quick,
+  move,
+}) {
+  const month = monthPeriod(day);
+  const monthGoals = goalsForMonth(goals, day);
+  const chosen = monthGoals.find((g) => g.id === goal);
+  const visible = chosen ? [chosen] : monthGoals;
+  const navigate = (date) => {
+    setDay(date);
+    setGoal(null);
+  };
   return (
     <>
       <div className="section-top">
         <div>
-          <h2>
-            2026년 10월 <span>목표와 마일스톤</span>
-          </h2>
-          <p>세 가지 방향, 하나의 연결된 계획.</p>
+          <div className="period-controls">
+            <h2>
+              {month.year}년 {month.month}월 <span>목표와 마일스톤</span>
+            </h2>
+            <PeriodNav
+              label="달"
+              previous={() => navigate(shiftMonth(day, -1))}
+              next={() => navigate(shiftMonth(day, 1))}
+              reset={() => navigate(TODAY)}
+            />
+          </div>
+          <p>
+            {monthGoals.length
+              ? `${monthGoals.length}가지 목표를 실행할 일과 연결하세요.`
+              : '이 달에 만들고 싶은 결과부터 적어보세요.'}
+          </p>
         </div>
-        <button className="button" onClick={() => changeView('week')}>
-          이번 주 실행 계획
-          <ArrowRight size={14} />
-        </button>
+        <div className="period-actions">
+          <button className="button" onClick={() => editGoal()}>
+            <Plus size={14} />
+            목표 추가
+          </button>
+          <button className="button" onClick={() => changeView('week')}>
+            주간 실행 계획
+            <ArrowRight size={14} />
+          </button>
+        </div>
       </div>
-      <div className="month-layout">
-        <div>
-          <div className="roadmap">
-            <div className="roadmap-header">
-              <span>이번 달의 목표</span>
-              <div>
-                {['1–4일', '5–11일', '12–18일', '19–25일', '26–31일'].map(
-                  (s) => (
-                    <span key={s}>{s}</span>
-                  ),
-                )}
-              </div>
-            </div>
-            {GOALS.map((g) => (
-              <div
-                className={`roadmap-row ${goal === g.id ? 'chosen' : ''}`}
-                key={g.id}
-              >
-                <button
-                  className="roadmap-name"
-                  onClick={() => setGoal(goal === g.id ? null : g.id)}
+      {!monthGoals.length ? (
+        <div className="empty-state">
+          <Target size={26} />
+          <b>아직 이 달의 목표가 없어요.</b>
+          <p>목표와 성공 기준을 정하고, 다음 행동을 연결하세요.</p>
+          <button className="button" onClick={() => editGoal()}>
+            첫 목표 만들기
+            <Plus size={14} />
+          </button>
+        </div>
+      ) : (
+        <div className="month-layout">
+          <div>
+            <div className="roadmap">
+              <div className="roadmap-header">
+                <span>이 달의 목표</span>
+                <div
+                  style={{
+                    gridTemplateColumns: month.segments
+                      .map((s) => `${s.days}fr`)
+                      .join(' '),
+                  }}
                 >
-                  <span>
-                    <i className={`dot ${g.color}`} />
-                    {g.project}
-                  </span>
-                  <b>{g.title}</b>
-                  <Progress tasks={tasks} goal={g.id} />
-                </button>
-                <div className="roadmap-lane">
-                  <div className="week-lines" />
-                  <span className="today-line">
-                    <small>오늘 22</small>
-                  </span>
-                  <button
-                    className={`roadmap-bar ${g.color}`}
-                    style={{
-                      left: `${((g.start - 1) / 31) * 100}%`,
-                      width: `${((g.end - g.start + 1) / 31) * 100}%`,
-                    }}
-                    onClick={() => setGoal(goal === g.id ? null : g.id)}
-                  >
-                    {g.project}
-                    <span>◇ {g.end}일</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="goal-details-heading">
-            <h3>
-              {goal
-                ? GOALS.find((g) => g.id === goal).title
-                : '목표별 다음 행동'}
-            </h3>
-            {goal && (
-              <button className="text-button" onClick={() => setGoal(null)}>
-                전체 목표 보기
-                <X size={12} />
-              </button>
-            )}
-            <span>목표를 누르면 연결된 할 일이 보여요.</span>
-          </div>
-          {visible.map((g) => (
-            <div className="goal-detail" key={g.id}>
-              <div className="goal-detail-title">
-                <span className={`goal-number ${g.color}`}>
-                  {GOALS.indexOf(g) + 1}
-                </span>
-                <div>
-                  <h3>{g.title}</h3>
-                  <p>{g.description}</p>
-                </div>
-                <span>{shortDate(g.due)} 마감</span>
-              </div>
-              {tasks
-                .filter((t) => t.goal === g.id && isOpen(t))
-                .slice(0, goal ? 9 : 2)
-                .map((t) => (
-                  <button
-                    className="goal-task"
-                    key={t.id}
-                    onClick={() => open(t.id)}
-                  >
-                    <Source task={t} />
-                    <span>{t.title}</span>
-                    <span className="muted">
-                      {t.date ? `${shortDate(t.date)} 계획` : '계획 필요'}
+                  {month.segments.map((s) => (
+                    <span key={s.first}>
+                      {s.first}–{s.last}일
                     </span>
-                    <ChevronRight size={13} />
-                  </button>
-                ))}
+                  ))}
+                </div>
+              </div>
+              {monthGoals.map((g) => {
+                const start =
+                  g.startDate < month.start ? 1 : Number(g.startDate.slice(8));
+                const end =
+                  g.due > month.end ? month.count : Number(g.due.slice(8));
+                return (
+                  <div
+                    className={`roadmap-row ${goal === g.id ? 'chosen' : ''}`}
+                    key={g.id}
+                  >
+                    <button
+                      className="roadmap-name"
+                      onClick={() => setGoal(goal === g.id ? null : g.id)}
+                    >
+                      <span>
+                        <i className={`dot ${g.color}`} />
+                        {g.project}
+                      </span>
+                      <b>{g.title}</b>
+                      <Progress tasks={tasks} goal={g.id} />
+                    </button>
+                    <div className="roadmap-lane">
+                      <div
+                        className="week-lines"
+                        style={{ background: 'none' }}
+                      >
+                        {month.segments.slice(0, -1).map((s) => (
+                          <i
+                            key={s.last}
+                            style={{
+                              position: 'absolute',
+                              left: `${(s.last / month.count) * 100}%`,
+                              top: 0,
+                              bottom: 0,
+                              borderLeft: '1px solid var(--line)',
+                            }}
+                          />
+                        ))}
+                      </div>
+                      {day.slice(0, 7) === TODAY.slice(0, 7) && (
+                        <span
+                          className="today-line"
+                          style={{
+                            left: `${((Number(TODAY.slice(8)) - 0.5) / month.count) * 100}%`,
+                          }}
+                        >
+                          <small>오늘 {Number(TODAY.slice(8))}</small>
+                        </span>
+                      )}
+                      <button
+                        className={`roadmap-bar ${g.color}`}
+                        style={{
+                          left: `${((start - 1) / month.count) * 100}%`,
+                          width: `${((end - start + 1) / month.count) * 100}%`,
+                        }}
+                        onClick={() => setGoal(goal === g.id ? null : g.id)}
+                      >
+                        {g.project}
+                        <span>◇ {shortDate(g.due)}</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          ))}
-        </div>
-        <aside className="milestones">
-          <h3>
-            <Flag size={16} />
-            다가오는 마일스톤
-          </h3>
-          {[...GOALS]
-            .sort((a, b) => a.due.localeCompare(b.due))
-            .map((g) => (
-              <button key={g.id} onClick={() => setGoal(g.id)}>
-                <span className="milestone-date">
-                  OCT<b>{g.due.slice(-2)}</b>
-                </span>
-                <span>
-                  <b>{g.milestone}</b>
-                  <small>{g.project}</small>
-                  <span className={`milestone-tag ${g.color}`}>
-                    {goalProgress(tasks, g.id).done}/
-                    {goalProgress(tasks, g.id).all} 완료
-                  </span>
-                </span>
-              </button>
-            ))}
-          <div className="next-cycle">
-            <Layers size={18} />
-            <h3>목표를 스프린트로</h3>
-            <p>이번 달 목표에 연결된 업무를 Sprint 24에서 확인하세요.</p>
-            <button
-              className="text-button"
-              onClick={() => changeView('sprint')}
-            >
-              스프린트 보기
-              <ArrowRight size={13} />
-            </button>
+            <div className="goal-details-heading">
+              <h3>{chosen ? chosen.title : '목표별 다음 행동'}</h3>
+              {chosen && (
+                <button className="text-button" onClick={() => setGoal(null)}>
+                  전체 목표 보기
+                  <X size={12} />
+                </button>
+              )}
+              <span>날짜를 정하면 일간·주간 계획에도 보여요.</span>
+            </div>
+            {visible.map((g) => {
+              const health = goalHealth(tasks, g);
+              const next = tasks
+                .filter((t) => t.goal === g.id && isOpen(t))
+                .sort(
+                  (a, b) =>
+                    Number(Boolean(a.date)) - Number(Boolean(b.date)) ||
+                    Number(b.status === 'blocked') -
+                      Number(a.status === 'blocked') ||
+                    (a.date || '').localeCompare(b.date || ''),
+                );
+              return (
+                <div className="goal-detail" key={g.id}>
+                  <div className="goal-detail-title">
+                    <span className={`goal-number ${g.color}`}>
+                      {monthGoals.indexOf(g) + 1}
+                    </span>
+                    <div>
+                      <h3>{g.title}</h3>
+                      <p>
+                        {g.description ||
+                          '성공 기준을 적어 목표를 구체화하세요.'}
+                      </p>
+                    </div>
+                    <span>{shortDate(g.due)} 목표</span>
+                    <button className="text-button" onClick={() => editGoal(g)}>
+                      수정
+                    </button>
+                  </div>
+                  <div className="goal-health">
+                    <span>남은 일 {health.open}</span>
+                    {health.unplanned > 0 && (
+                      <span className="amber-text">
+                        미계획 {health.unplanned}
+                      </span>
+                    )}
+                    {health.blocked > 0 && (
+                      <span className="amber-text">막힘 {health.blocked}</span>
+                    )}
+                    {health.late > 0 && (
+                      <span className="amber-text">
+                        목표일 이후 계획 {health.late}
+                      </span>
+                    )}
+                  </div>
+                  <div className="goal-next-actions">
+                    {next.slice(0, chosen ? next.length : 2).map((t) => (
+                      <div className="goal-task" key={t.id}>
+                        <button
+                          className="goal-task-main"
+                          onClick={() => open(t.id)}
+                        >
+                          <Source task={t} />
+                          <span>{t.title}</span>
+                          {!t.date && (
+                            <small className="amber-text">계획 필요</small>
+                          )}
+                        </button>
+                        <input
+                          className="goal-date"
+                          type="date"
+                          aria-label={`${t.id} 목표에서 계획 날짜`}
+                          value={t.date || ''}
+                          onInput={(e) => move(t.id, e.target.value)}
+                        />
+                        <button
+                          className="icon-button"
+                          aria-label={`${t.id} 상세 열기`}
+                          onClick={() => open(t.id)}
+                        >
+                          <ChevronRight size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="goal-detail-actions">
+                    <button
+                      className="text-button"
+                      onClick={() => quick(null, g.id)}
+                    >
+                      <Plus size={13} />
+                      다음 행동 추가
+                    </button>
+                    {!chosen && next.length > 2 && (
+                      <button
+                        className="text-button"
+                        onClick={() => setGoal(g.id)}
+                      >
+                        남은 {next.length}개 모두 보기
+                        <ChevronRight size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </aside>
-      </div>
+          <aside className="milestones">
+            <h3>
+              <Flag size={16} />이 달의 마일스톤
+            </h3>
+            {[...monthGoals]
+              .sort((a, b) => a.due.localeCompare(b.due))
+              .map((g) => (
+                <button key={g.id} onClick={() => setGoal(g.id)}>
+                  <span className="milestone-date">
+                    {Number(g.due.slice(5, 7))}월<b>{g.due.slice(-2)}</b>
+                  </span>
+                  <span>
+                    <b>{g.milestone}</b>
+                    <small>{g.project}</small>
+                    <span className={`milestone-tag ${g.color}`}>
+                      {goalProgress(tasks, g.id).done}/
+                      {goalProgress(tasks, g.id).all} 내 작업 완료
+                    </span>
+                  </span>
+                </button>
+              ))}
+            <div className="next-cycle">
+              <Layers size={18} />
+              <h3>목표를 실행 계획으로</h3>
+              <p>
+                연결된 할 일에 날짜와 스프린트를 정하면 같은 업무로 계속
+                추적해요.
+              </p>
+              <button
+                className="text-button"
+                onClick={() => changeView('sprint')}
+              >
+                스프린트 보기
+                <ArrowRight size={13} />
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
     </>
   );
 }
-function Inspector({ task: t, tasks, patch, move, close, toggle }) {
+function Inspector({
+  task: t,
+  tasks,
+  goals,
+  patch,
+  move,
+  close,
+  toggle,
+  archive,
+}) {
+  const [title, setTitle] = useState(t.title);
+  useEffect(() => setTitle(t.title), [t.id, t.title]);
   const [note, setNote] = useState(''),
     [context, setContext] = useState(null);
   useEffect(() => {
@@ -1706,10 +2354,32 @@ function Inspector({ task: t, tasks, patch, move, close, toggle }) {
           <X size={17} />
         </button>
       </header>
-      <h2>{t.title}</h2>
+      {t.source === '개인' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (title.trim() && title.trim() !== t.title)
+              patch(t.id, { title: title.trim() }, '할 일 이름을 수정했어요');
+          }}
+        >
+          <input
+            className="task-title-editor"
+            aria-label="개인 할 일 이름"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          {title !== t.title && (
+            <button className="button" disabled={!title.trim()}>
+              이름 저장
+            </button>
+          )}
+        </form>
+      ) : (
+        <h2>{t.title}</h2>
+      )}
       <span className="inspector-subtitle">내 계획 · {t.source} 연결 샘플</span>
       <dl>
-        <dt>작업 상태</dt>
+        <dt>내 진행 상태</dt>
         <dd>
           <select
             aria-label={`${t.id} 상태`}
@@ -1723,6 +2393,15 @@ function Inspector({ task: t, tasks, patch, move, close, toggle }) {
             ))}
           </select>
         </dd>
+        {t.source !== '개인' && (
+          <>
+            <dt>{t.source} 원본 상태</dt>
+            <dd>
+              {STATUS[t.sourceStatus] || '확인되지 않음'}{' '}
+              <small>· 읽기 전용 샘플</small>
+            </dd>
+          </>
+        )}
         <dt>계획 날짜</dt>
         <dd>
           <input
@@ -1766,6 +2445,27 @@ function Inspector({ task: t, tasks, patch, move, close, toggle }) {
         </dd>
         <dt>원본 마감</dt>
         <dd>{t.due ? `${shortDate(t.due)} · ${t.source}` : '없음'}</dd>
+        <dt>연결 목표</dt>
+        <dd>
+          <select
+            aria-label={`${t.id} 연결 목표`}
+            value={t.goal || ''}
+            onChange={(e) =>
+              patch(
+                t.id,
+                { goal: e.target.value || null },
+                '연결 목표를 변경했어요',
+              )
+            }
+          >
+            <option value="">지정 안 함</option>
+            {goals.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.title}
+              </option>
+            ))}
+          </select>
+        </dd>
         <dt>스프린트</dt>
         <dd>
           <select
@@ -1803,7 +2503,9 @@ function Inspector({ task: t, tasks, patch, move, close, toggle }) {
           {t.blocker || '진행을 막는 이유를 메모에 남겨주세요.'}
         </div>
       )}
-      <p className="helper">계획 날짜를 옮겨도 원본 마감일은 바뀌지 않아요.</p>
+      <p className="helper">
+        내 진행 상태와 계획을 바꿔도 원본 상태·마감은 유지돼요.
+      </p>
       <section>
         <h3>작업 메모</h3>
         <p>
@@ -1816,7 +2518,7 @@ function Inspector({ task: t, tasks, patch, move, close, toggle }) {
           <h3>연결된 맥락</h3>
           <div className="linked-goal">
             <Target size={14} />
-            {GOALS.find((g) => g.id === t.goal)?.title}
+            {goals.find((g) => g.id === t.goal)?.title}
           </div>
           {t.mr && (
             <button
@@ -1888,6 +2590,13 @@ function Inspector({ task: t, tasks, patch, move, close, toggle }) {
         <Check size={15} />
         {t.status === 'done' ? '완료 취소' : '내 작업 완료'}
       </button>
+      {t.source === '개인' && (
+        <div className="archive-actions">
+          <button className="text-button" onClick={archive}>
+            <Archive size={14} />할 일 보관
+          </button>
+        </div>
+      )}
       <p className="helper">이 화면의 변경은 데모에만 저장됩니다.</p>
     </aside>
   );
